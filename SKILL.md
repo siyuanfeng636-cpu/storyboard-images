@@ -1,9 +1,9 @@
 ---
-name: storyboard
-description: 分镜生成、参考图驱动出图、场景拆解和视频理解技能。用于根据分镜脚本、提示词、现有分镜图或视频素材，批量生成任意数量的高清分镜图；调用 Gemini API 理解图片并输出素材裁切、光影与环境提示词、一致性场景包；以及理解视频的镜头结构、风格、特效和转场并产出 Markdown 分析。触发词：分镜、storyboard、参考图出图、拆素材、场景一致性、Seedance 素材、视频理解、镜头分析。
+name: storyboard-studio
+description: 分镜生成、参考图驱动出图、场景拆解和视频理解技能。用于根据分镜脚本、提示词、现有分镜图或视频素材，批量生成任意数量的高清分镜图；调用 Gemini API 理解图片并输出素材裁切、光影与环境提示词、一致性场景包；以及理解视频的镜头结构、风格、特效和转场并产出 Markdown 分析。触发词：分镜、storyboard、storyboard studio、参考图出图、拆素材、场景一致性、Seedance 素材、视频理解、镜头分析。
 ---
 
-# Storyboard
+# Storyboard Studio
 
 使用 Gemini 完成四类工作：
 
