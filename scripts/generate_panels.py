@@ -1,170 +1,173 @@
 #!/usr/bin/env python3
-"""
-Generate 4K storyboard panel images via Gemini REST API.
+"""根据分镜配置批量生成任意数量的高清镜头图。"""
 
-Usage:
-    python3 generate_panels.py --config panels.json --output-dir ./output [--aspect-ratio 16:9] [--image-size 4K]
+from __future__ import annotations
 
-The config JSON format:
-{
-    "style": "Global style prefix for all panels...",
-    "panels": [
-        {"id": 1, "filename": "panel_01.png", "prompt": "..."},
-        ...
-    ]
+import argparse
+import time
+from pathlib import Path
+from typing import Any
+
+from google.genai import types
+
+from common import (
+    DEFAULT_IMAGE_MODEL,
+    build_client,
+    normalize_text_list,
+    open_images,
+    read_json,
+    save_inline_images,
+    slugify,
+    write_text,
+)
+
+
+QUALITY_HINTS = {
+    "1K": "high-resolution, crisp and clean.",
+    "2K": "very high-resolution, crisp materials and typography.",
+    "4K": "ultra-detailed, production-ready, crystal-clear typography and materials.",
 }
 
-Requires env var: GEMINI_API_KEY
-"""
 
-import os
-import sys
-import json
-import time
-import base64
-import argparse
-
-import requests
-from PIL import Image
-import io
+def load_shots(config: dict[str, Any]) -> list[dict[str, Any]]:
+    if config.get("shots"):
+        return list(config["shots"])
+    if config.get("panels"):
+        return list(config["panels"])
+    raise ValueError("Config must contain either 'shots' or 'panels'")
 
 
-API_MODEL = "gemini-3-pro-image-preview"
+def build_prompt(config: dict[str, Any], shot: dict[str, Any], image_size: str) -> str:
+    if shot.get("scene") or shot.get("visual_elements") or shot.get("required_text"):
+        required_text = normalize_text_list(shot.get("required_text"))
+        visual_elements = shot.get("visual_elements") or []
+        lines = [
+            str(config.get("global_style") or config.get("style") or "").strip(),
+            "",
+            "Scene:",
+            str(shot.get("scene", "")).strip(),
+            "",
+            "Shot intent:",
+            str(shot.get("prompt", "")).strip(),
+            "",
+            "Required visual elements:",
+        ]
+        if visual_elements:
+            lines.extend(f"- {item}" for item in visual_elements)
+        else:
+            lines.append("- Keep the core subject and environment consistent.")
+
+        lines.extend(["", "Required text (render exactly these characters, nothing else):"])
+        if required_text:
+            for item in required_text:
+                suffix = f" | {item['style']}" if item["style"] else ""
+                lines.append(f"- {item['label']}: {item['text']}{suffix}")
+        else:
+            lines.append("- No visible text.")
+
+        lines.extend(
+            [
+                "",
+                "Image quality requirements:",
+                f"- {QUALITY_HINTS[image_size]}",
+                "- Keep text legible and free of hallucinated extra characters.",
+                "- Keep prop edges, materials, and lighting transitions clear.",
+                "",
+                "Forbidden:",
+                f"- {config.get('global_negative', 'No extra text, watermark, unrelated props, or extra characters.')}",
+            ]
+        )
+        return "\n".join(line for line in lines if line is not None).strip()
+
+    return str(shot.get("prompt", "")).strip()
 
 
-def get_api_url(api_key: str) -> str:
-    return (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{API_MODEL}:generateContent?key={api_key}"
-    )
-
-
-def generate_panel(
-    panel: dict,
-    api_url: str,
-    output_dir: str,
-    aspect_ratio: str,
-    image_size: str,
-    max_retries: int = 3,
-) -> bool:
-    """Generate a single panel image. Returns True on success."""
-    print(f"\n{'='*60}")
-    print(f"[Panel {panel['id']}] {panel['filename']}")
-    print(f"{'='*60}")
-
-    payload = {
-        "contents": [{"parts": [{"text": panel["prompt"]}]}],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            },
-        },
-    }
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"  Attempt {attempt}/{max_retries}...", flush=True)
-            resp = requests.post(
-                api_url,
-                headers={"Content-Type": "application/json"},
-                json=payload,
-                timeout=180,
-            )
-
-            if resp.status_code != 200:
-                print(f"  x HTTP {resp.status_code}: {resp.text[:300]}")
-                if attempt < max_retries:
-                    time.sleep(attempt * 5)
-                continue
-
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                print("  x No candidates in response")
-                continue
-
-            parts = candidates[0].get("content", {}).get("parts", [])
-
-            for part in parts:
-                inline_data = part.get("inlineData")
-                if inline_data and inline_data.get("data"):
-                    img_bytes = base64.b64decode(inline_data["data"])
-                    output_path = os.path.join(output_dir, panel["filename"])
-                    pil_img = Image.open(io.BytesIO(img_bytes))
-                    pil_img.save(output_path)
-                    w, h = pil_img.size
-                    print(f"  + Saved: {output_path}")
-                    print(f"    Resolution: {w}x{h}")
-                    return True
-
-            print("  x No image data in response")
-
-        except requests.exceptions.Timeout:
-            print(f"  x Timeout (attempt {attempt})")
-        except Exception as e:
-            print(f"  x Error: {e}")
-
-        if attempt < max_retries:
-            wait = attempt * 8
-            print(f"    Retrying in {wait}s...")
-            time.sleep(wait)
-
-    return False
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Generate storyboard panels via Gemini API")
-    parser.add_argument("--config", required=True, help="Path to panels JSON config file")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate storyboard shots via Gemini image model")
+    parser.add_argument("--config", required=True, help="Path to storyboard JSON config")
     parser.add_argument("--output-dir", required=True, help="Directory to save generated images")
-    parser.add_argument("--aspect-ratio", default="16:9", help="Image aspect ratio (default: 16:9)")
-    parser.add_argument("--image-size", default="4K", choices=["1K", "2K", "4K"], help="Image resolution (default: 4K)")
-    parser.add_argument("--retry-failed", action="store_true", help="Only retry panels that don't exist in output-dir")
+    parser.add_argument("--model", default=DEFAULT_IMAGE_MODEL, help="Gemini image model")
+    parser.add_argument("--aspect-ratio", default=None, help="Fallback aspect ratio")
+    parser.add_argument(
+        "--image-size",
+        default="4K",
+        choices=["1K", "2K", "4K"],
+        help="Quality hint to inject into the prompt",
+    )
+    parser.add_argument("--retry-failed", action="store_true", help="Only regenerate missing files")
+    parser.add_argument("--save-prompts", action="store_true", help="Save final prompt markdown for each shot")
+    parser.add_argument("--sleep-seconds", type=float, default=2.0, help="Pause between requests")
     args = parser.parse_args()
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        sys.exit("ERROR: GEMINI_API_KEY environment variable not set")
+    client = build_client()
+    config = read_json(args.config)
+    shots = load_shots(config)
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prompts_dir = output_dir / "prompts"
+    if args.save_prompts:
+        prompts_dir.mkdir(parents=True, exist_ok=True)
 
-    api_url = get_api_url(api_key)
-    os.makedirs(args.output_dir, exist_ok=True)
+    global_refs = list(config.get("global_reference_images") or [])
+    total = len(shots)
+    success = 0
+    failed: list[str] = []
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    panels = config["panels"]
-
-    # Filter to only missing panels if --retry-failed
-    if args.retry_failed:
-        panels = [p for p in panels if not os.path.exists(os.path.join(args.output_dir, p["filename"]))]
-        if not panels:
-            print("All panels already exist. Nothing to do.")
-            return
-
-    total = len(panels)
     print("=" * 60)
-    print(f"  Storyboard Generation — {args.image_size} ({args.aspect_ratio})")
-    print(f"  Model: {API_MODEL}")
-    print(f"  Panels: {total}")
-    print(f"  Output: {args.output_dir}")
+    print(f"Storyboard generation")
+    print(f"Model: {args.model}")
+    print(f"Shots: {total}")
+    print(f"Output: {output_dir}")
     print("=" * 60)
 
-    success, failed = 0, []
-    for panel in panels:
-        if generate_panel(panel, api_url, args.output_dir, args.aspect_ratio, args.image_size):
+    for index, shot in enumerate(shots, start=1):
+        shot_id = str(shot.get("id", index))
+        filename = shot.get("filename") or f"{slugify(shot_id)}.png"
+        output_path = output_dir / filename
+
+        if args.retry_failed and output_path.exists():
+            print(f"[{shot_id}] skip existing: {output_path.name}")
             success += 1
-        else:
-            failed.append(panel["id"])
-        time.sleep(3)
+            continue
 
-    print(f"\n{'='*60}")
-    print(f"  DONE  + {success}/{total}   x {len(failed)}")
+        prompt = build_prompt(config, shot, args.image_size)
+        ref_images = open_images(global_refs + list(shot.get("reference_images") or []))
+        aspect_ratio = shot.get("aspect_ratio") or config.get("default_aspect_ratio") or args.aspect_ratio or "16:9"
+
+        print(f"[{shot_id}] {output_path.name}")
+        try:
+            response = client.models.generate_content(
+                model=args.model,
+                contents=[prompt, *ref_images],
+                config=types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                    image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                    temperature=0.6,
+                ),
+            )
+            saved_files = save_inline_images(response, output_path)
+            if not saved_files:
+                raise RuntimeError("No image returned by model")
+
+            if args.save_prompts:
+                prompt_path = prompts_dir / f"{Path(filename).stem}.md"
+                write_text(prompt_path, f"# {shot_id}\n\n```text\n{prompt}\n```")
+
+            print(f"  saved: {saved_files[0].name}")
+            success += 1
+        except Exception as exc:
+            failed.append(shot_id)
+            print(f"  failed: {exc}")
+
+        if index < total and args.sleep_seconds > 0:
+            time.sleep(args.sleep_seconds)
+
+    print("=" * 60)
+    print(f"Done: {success}/{total}")
     if failed:
-        print(f"  Failed panels: {failed}")
-        print(f"  Re-run with --retry-failed to regenerate them.")
-    print(f"  Files in: {args.output_dir}")
-    print(f"{'='*60}")
+        print(f"Failed shots: {failed}")
+    print(f"Files in: {output_dir}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":

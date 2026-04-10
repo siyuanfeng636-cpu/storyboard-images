@@ -1,120 +1,125 @@
 ---
 name: storyboard
-description: 3×3 分镜脚本图片生成技能。当用户提供分镜脚本（storyboard）文本并需要生成对应的高清图片时使用此技能。支持自动拆分 9 个面板、调用 Gemini API 生成 4K 图片、本地保存。触发词：分镜、storyboard、生成分镜图、生成图片面板。
+description: 分镜生成、参考图驱动出图、场景拆解和视频理解技能。用于根据分镜脚本、提示词、现有分镜图或视频素材，批量生成任意数量的高清分镜图；调用 Gemini API 理解图片并输出素材裁切、光影与环境提示词、一致性场景包；以及理解视频的镜头结构、风格、特效和转场并产出 Markdown 分析。触发词：分镜、storyboard、参考图出图、拆素材、场景一致性、Seedance 素材、视频理解、镜头分析。
 ---
 
-# /storyboard — 3×3 分镜高清图生成
+# Storyboard
 
-将用户的分镜脚本文本自动拆分为 9 个面板，调用 Gemini API 生成 4K 高清图片并保存到本地。
+使用 Gemini 完成四类工作：
 
-## 使用方式
+1. 根据分镜脚本、提示词和参考图生成任意数量的高清分镜图。
+2. 理解单张或多张图片，输出素材清单、裁切素材、背景与光影提示词。
+3. 为同一场景沉淀可复用的“场景一致性包”。
+4. 理解视频的拍摄结构、镜头语言、风格、特效与转场，并输出供 Seedance 等后续工具使用的分析文档。
 
-1. 用户输入 `/storyboard` 后，提示用户粘贴完整的分镜脚本文本
-2. 或者用户直接在消息中提供分镜脚本并说明要生成图片
+## 先决条件
+
+- 设置 `GEMINI_API_KEY`。
+- Python 依赖：`google-genai`, `Pillow`。
+- 需要生成图片时，优先使用当前可用的 Gemini 图片模型；需要理解图片或视频时，优先使用 `gemini-2.5-flash`。
+
+## 任务路由
+
+- 需要“根据脚本或提示词批量出图”时，使用 `scripts/generate_panels.py`。
+- 需要“理解图片、拆出素材、生成场景提示词包”时，使用 `scripts/analyze_image_scene.py`。
+- 需要“理解视频并输出镜头/风格/特效分析”时，使用 `scripts/analyze_video_story.py`。
+- 构造配置文件前，先读 [references/config_schema.md](references/config_schema.md)。
+- 编写分镜 prompt 时，先读 [references/prompt_template.md](references/prompt_template.md)。
+- 需要确认模型、输入限制、文件上传方式时，读 [references/gemini_workflows.md](references/gemini_workflows.md)。
 
 ## 工作流程
 
-### Step 1: 接收与解析分镜脚本
+### 1. 生成分镜图
 
-从用户提供的文本中提取以下内容：
+适用场景：
+- 用户给出分镜脚本，要批量生成多个镜头图。
+- 用户给出已有分镜图或风格图，要保持镜头风格和场景一致性。
+- 用户要求输出清晰文字、清晰材质和高清构图。
 
-- **全局视觉要求**：风格、色调、设计语言、背景细节 → 合并为 `STYLE` 前缀
-- **环境约束**：必须包含/不得包含的元素 → 加入对应面板的 prompt
-- **Negative constraints**：禁止元素 → 加入 `FORBIDDEN` 后缀
-- **9 个 Panel**：每个 Panel 的场景描述、文字内容、视觉元素
+执行要求：
+- 不再默认限制为 3×3 或 9 宫格。镜头数量由 `shots` 列表决定。
+- 每个镜头都允许单独挂载 `reference_images`，并可叠加全局 `global_reference_images`。
+- 对于画面内文字，必须显式写入 `required_text`，并加上“只渲染这些文字”的限制。
+- 输出时同时保存生成图片和对应的最终 prompt `.md`，便于复用和追溯。
 
-### Step 2: 构建 Prompt
-
-先读取 `references/prompt_template.md` 了解模板规范。
-
-每个 Panel 的 prompt 结构：
-
-```
-{STYLE}
-
-Scene: {一句话场景描述}
-
-REQUIRED TEXT (render exactly these characters, nothing else):
-- {文字1}: {内容}
-- {文字2}: {内容}
-
-Visual elements: {视觉元素描述}
-
-FORBIDDEN: Do not render any text other than the lines specified above.
-```
-
-**关键规则：**
-- 每个 prompt 必须明确标注 `REQUIRED TEXT`，列出所有需要在图片中渲染的中文文字
-- 必须以 `FORBIDDEN` 后缀禁止多余文字，避免 Gemini 添加衍生文字
-- 文字用引号包裹，注明样式（large/bold/medium 等）
-
-### Step 3: 生成配置文件
-
-将拆分结果写入临时 JSON 配置文件：
-
-```json
-{
-    "style": "全局风格前缀...",
-    "panels": [
-        {
-            "id": 1,
-            "filename": "panel_01_{简短英文描述}.png",
-            "prompt": "完整 prompt..."
-        }
-    ]
-}
-```
-
-保存到 `~/storyboard_output/{项目名}/panels_config.json`。
-
-### Step 4: 调用生成脚本
+推荐命令：
 
 ```bash
-python3 ~/.claude/skills/storyboard/scripts/generate_panels.py \
-    --config ~/storyboard_output/{项目名}/panels_config.json \
-    --output-dir ~/storyboard_output/{项目名}/ \
-    --aspect-ratio 16:9 \
-    --image-size 4K
+python3 scripts/generate_panels.py \
+  --config /path/to/storyboard.json \
+  --output-dir ~/storyboard_output/project_name \
+  --aspect-ratio 16:9 \
+  --image-size 4K
 ```
 
-**参数说明：**
-- `--aspect-ratio`: 支持 "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"
-- `--image-size`: 支持 "1K", "2K", "4K"（4K = 5504×3072）
-- `--retry-failed`: 只重新生成输出目录中缺失的面板
+### 2. 拆解图片素材并沉淀场景包
 
-**前提条件：**
-- 环境变量 `GEMINI_API_KEY` 必须已设置
-- Python 依赖：`requests`, `Pillow`
+适用场景：
+- 用户给出单张场景图，希望拆出人物、道具、文字区、背景参考。
+- 用户需要把光影、环境、材质写成稳定 prompt，方便后续保持一致。
+- 用户需要为动态设计准备可复用素材和描述文档。
 
-### Step 5: 补生成与验证
+执行要求：
+- 让 Gemini 先输出结构化分析，包括场景摘要、灯光、环境、连续性约束和素材框选。
+- 本地根据模型给出的框选结果裁切素材，输出到 `assets/`。
+- 同时生成 `scene_prompt.md`、`asset_manifest.md`、`scene_analysis.json`。
+- 如果背景无法无损抠出，保留 `background_reference.png` 和“背景重建 prompt”，不要伪装成精确分层。
 
-如果有面板生成失败，自动使用 `--retry-failed` 重试：
+推荐命令：
 
 ```bash
-python3 ~/.claude/skills/storyboard/scripts/generate_panels.py \
-    --config {同上} --output-dir {同上} --retry-failed
+python3 scripts/analyze_image_scene.py \
+  --image /path/to/scene.png \
+  --output-dir ~/storyboard_output/project_name/scene_pack
 ```
 
-最后验证所有 9 张图片是否存在，报告结果。
+### 3. 理解视频并输出镜头分析
 
-### Step 6: 结果汇报
+适用场景：
+- 用户给出视频，希望拆解拍摄结构、镜头节奏、风格、特效与转场。
+- 用户需要把视频分析整理成 `.md` 文档，给 Seedance 或后续生成链路复用。
 
-向用户汇报：
-- 生成数量（成功/总数）
-- 每张图片的分辨率
-- 输出目录路径
-- 可用 `open ~/storyboard_output/{项目名}/` 预览
+执行要求：
+- 本地视频优先走 Gemini Files API；公开视频可直接提供 YouTube URL。
+- 输出 Markdown，至少包含：整体概览、镜头节奏、镜头清单、视觉风格、光影/环境、特效/转场、可复用 prompt、Seedance 素材建议。
+- 如果视频较长，要求模型按时间段分段总结并标出关键时间点。
 
-## 默认输出路径
+推荐命令：
 
-`~/storyboard_output/{YYYY-MM-DD}_{主题关键词}/`
+```bash
+python3 scripts/analyze_video_story.py \
+  --video /path/to/video.mp4 \
+  --output-dir ~/storyboard_output/project_name/video_report
+```
 
-例如：`~/storyboard_output/2026-04-10_drone_inspection/`
+## 输出目录约定
 
-## 注意事项
+默认输出到：
 
-- 每张 4K 图片约 1-3MB，生成时间约 15-30 秒/张
-- API 有速率限制，脚本已内置 3 秒间隔
-- 如遇到 SSL 或超时错误，脚本会自动重试最多 3 次
-- 文字渲染质量取决于 prompt 的精确程度，务必在 `REQUIRED TEXT` 中列明所有文字
-- 图片保存在本地，不会自动上传任何云服务
+```text
+~/storyboard_output/{YYYY-MM-DD}_{项目关键词}/
+```
+
+推荐结构：
+
+```text
+project/
+├── storyboard.json
+├── shots/
+├── prompts/
+├── scene_pack/
+│   ├── assets/
+│   ├── scene_prompt.md
+│   ├── asset_manifest.md
+│   └── scene_analysis.json
+└── video_report/
+    ├── video_analysis.md
+    └── video_analysis.json
+```
+
+## 关键约束
+
+- 不要把“背景已无损分离”说成既成事实；当前流程是“理解 + 框选裁切 + 背景参考/重建提示词”。
+- 不要默认任何固定宫格数量。只围绕用户实际镜头数构建 `shots`。
+- 不要省略输出文件说明。每次执行后都要告诉用户生成数量、失败项和输出目录。
+- 如果用户给的是模糊需求，先把镜头表或场景包结构整理成 JSON，再执行脚本。

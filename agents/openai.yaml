@@ -1,0 +1,4 @@
+interface:
+  display_name: "Storyboard Studio"
+  short_description: "分镜生成、参考图控图、场景拆解、场景一致性与视频分析工作流"
+  default_prompt: "Use $storyboard to generate storyboard shots, analyze scene assets, or break down a reference video."
