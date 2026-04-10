@@ -15,8 +15,9 @@ from google import genai
 from PIL import Image
 
 
-DEFAULT_IMAGE_MODEL = "gemini-2.5-flash-image"
-DEFAULT_ANALYSIS_MODEL = "gemini-2.5-flash"
+DEFAULT_IMAGE_MODEL = "models/gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_FALLBACK_MODEL = "models/gemini-3-pro-image-preview"
+DEFAULT_ANALYSIS_MODEL = "models/gemini-3-flash-preview"
 
 
 def require_api_key() -> str:

@@ -90,6 +90,23 @@ storyboard-images/
 - 已安装 `Pillow`
 - 已设置环境变量 `GEMINI_API_KEY`
 
+## 默认模型策略
+
+- 视频理解：`models/gemini-3-flash-preview`
+- 图片理解：`models/gemini-3-flash-preview`
+- 图像生成优先：`models/gemini-3.1-flash-image-preview`
+- 图像生成备选/高质量终稿：`models/gemini-3-pro-image-preview`
+
+默认清晰度策略：
+
+- 首轮生成默认 `1K`
+- 用户确认构图、文字和素材细节后，再生成 `4K`
+
+说明：
+
+- 我已按你要求把技能默认值改成上面的模型选择。
+- 截至 2026-04-10，我能从 Google 官方资料对齐到 `gemini-3-flash-preview` 和 `gemini-3-pro-image-preview` 的命名；`gemini-3.1-flash-image-preview` 我没有检索到明确的公开模型页，因此脚本保留了 `--model` 与 `--fallback-model` 覆盖能力，便于你按实际可用账号/配额调整。
+
 示例：
 
 ```bash
@@ -158,6 +175,17 @@ python3 scripts/generate_panels.py \
   --config /path/to/storyboard.json \
   --output-dir ~/storyboard_output/project_name \
   --aspect-ratio 16:9 \
+  --image-size 1K \
+  --save-prompts
+```
+
+确认后再出终稿：
+
+```bash
+python3 scripts/generate_panels.py \
+  --config /path/to/storyboard.json \
+  --output-dir ~/storyboard_output/project_name_4k \
+  --model models/gemini-3-pro-image-preview \
   --image-size 4K \
   --save-prompts
 ```
@@ -233,6 +261,7 @@ Gemini 官方文档：
 - 当前“拆素材”是基于模型理解后的框选裁切，不是精细抠图或真实分层 PSD。
 - 当前“背景分离”是保留背景参考图并生成背景重建 prompt，不等同于自动无损分层。
 - 图片生成质量仍受模型当期可用版本、参考图质量和 prompt 精度影响。
+- 如果 `models/gemini-3.1-flash-image-preview` 在当前账号或地区不可用，脚本会继续尝试 `models/gemini-3-pro-image-preview`。
 
 ## 建议的下一步
 

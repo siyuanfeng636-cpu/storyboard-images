@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from google.genai import types
 
 from common import (
     DEFAULT_IMAGE_MODEL,
+    DEFAULT_IMAGE_FALLBACK_MODEL,
     build_client,
     normalize_text_list,
     open_images,
@@ -87,10 +88,15 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Path to storyboard JSON config")
     parser.add_argument("--output-dir", required=True, help="Directory to save generated images")
     parser.add_argument("--model", default=DEFAULT_IMAGE_MODEL, help="Gemini image model")
+    parser.add_argument(
+        "--fallback-model",
+        default=DEFAULT_IMAGE_FALLBACK_MODEL,
+        help="Fallback Gemini image model used when the primary model fails",
+    )
     parser.add_argument("--aspect-ratio", default=None, help="Fallback aspect ratio")
     parser.add_argument(
         "--image-size",
-        default="4K",
+        default="1K",
         choices=["1K", "2K", "4K"],
         help="Quality hint to inject into the prompt",
     )
@@ -116,7 +122,9 @@ def main() -> None:
     print("=" * 60)
     print(f"Storyboard generation")
     print(f"Model: {args.model}")
+    print(f"Fallback model: {args.fallback_model}")
     print(f"Shots: {total}")
+    print(f"Image size hint: {args.image_size}")
     print(f"Output: {output_dir}")
     print("=" * 60)
 
@@ -133,31 +141,47 @@ def main() -> None:
         prompt = build_prompt(config, shot, args.image_size)
         ref_images = open_images(global_refs + list(shot.get("reference_images") or []))
         aspect_ratio = shot.get("aspect_ratio") or config.get("default_aspect_ratio") or args.aspect_ratio or "16:9"
+        models_to_try = [args.model]
+        if args.fallback_model and args.fallback_model != args.model:
+            models_to_try.append(args.fallback_model)
 
         print(f"[{shot_id}] {output_path.name}")
-        try:
-            response = client.models.generate_content(
-                model=args.model,
-                contents=[prompt, *ref_images],
-                config=types.GenerateContentConfig(
-                    response_modalities=["TEXT", "IMAGE"],
-                    image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
-                    temperature=0.6,
-                ),
-            )
-            saved_files = save_inline_images(response, output_path)
-            if not saved_files:
-                raise RuntimeError("No image returned by model")
+        shot_saved = False
+        last_error: Optional[Exception] = None
+        for model_name in models_to_try:
+            try:
+                print(f"  trying model: {model_name}")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[prompt, *ref_images],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["TEXT", "IMAGE"],
+                        image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                        temperature=0.6,
+                    ),
+                )
+                saved_files = save_inline_images(response, output_path)
+                if not saved_files:
+                    raise RuntimeError("No image returned by model")
 
-            if args.save_prompts:
-                prompt_path = prompts_dir / f"{Path(filename).stem}.md"
-                write_text(prompt_path, f"# {shot_id}\n\n```text\n{prompt}\n```")
+                if args.save_prompts:
+                    prompt_path = prompts_dir / f"{Path(filename).stem}.md"
+                    write_text(
+                        prompt_path,
+                        f"# {shot_id}\n\n- model: {model_name}\n- image_size: {args.image_size}\n\n```text\n{prompt}\n```",
+                    )
 
-            print(f"  saved: {saved_files[0].name}")
-            success += 1
-        except Exception as exc:
+                print(f"  saved: {saved_files[0].name}")
+                shot_saved = True
+                success += 1
+                break
+            except Exception as exc:
+                last_error = exc
+                print(f"  model failed: {exc}")
+
+        if not shot_saved:
             failed.append(shot_id)
-            print(f"  failed: {exc}")
+            print(f"  failed: {last_error}")
 
         if index < total and args.sleep_seconds > 0:
             time.sleep(args.sleep_seconds)
